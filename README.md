@@ -47,5 +47,14 @@ It helps traders visualize trends, indicators, and simple price predictions — 
 
 ---
 
-## 🏗️ Project Structure
+## 👨‍💻 Author
+
+**Rohit**
+- B.Tech in Artificial Intelligence & Data Science
+- 📧 Email: rk3231002@gmail.com
+
+- 🌐 GitHub: github.com/rohit7303620
+
+---
+
 
