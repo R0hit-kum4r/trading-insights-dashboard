@@ -92,6 +92,18 @@ prediction_days = st.sidebar.slider("Prediction horizon (business days)", 1, 30,
 lookback = st.sidebar.slider("Trend lookback window (days)", 20, 365, 90)
 show_indicators = st.sidebar.multiselect("Indicators", ["SMA", "EMA", "MACD", "RSI"], default=["SMA", "MACD"])
 
+# Candles + Bollinger options
+show_candles = st.sidebar.checkbox("Candlestick", value=True)
+show_bollinger = st.sidebar.checkbox("Bollinger Bands", value=True)
+
+# Bollinger sliders (appear when BB enabled)
+if show_bollinger:
+    bb_window = st.sidebar.slider("BB Window (period)", 10, 50, 20)
+    bb_std = st.sidebar.slider("BB Std Dev (volatility)", 1.0, 4.0, 2.0)
+else:
+    bb_window = 20
+    bb_std = 2.0
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("Built for: Traders (sell via Telegram/YouTube community)")
 
@@ -261,14 +273,100 @@ col1, col2 = st.columns([3, 1])
 
 with col1:
     st.subheader("Price & Prediction")
+
+    # Ensure OHLC columns exist (try common variants and also try flattened names)
+    ohlc_names = {
+        'open': ['Open', 'open', 'OPEN', 'Open_'],
+        'high': ['High', 'high', 'HIGH', 'High_'],
+        'low':  ['Low', 'low', 'LOW', 'Low_'],
+        'close':['Close', 'close', 'CLOSE', 'Adj Close', 'Adj_Close', 'Close_']
+    }
+
+    # helper to find a column by possible names or by substring
+    def find_col(possible_names):
+        for n in possible_names:
+            if n in df.columns:
+                return n
+        # substring match
+        for c in df.columns:
+            for n in possible_names:
+                if n.lower().strip('_') in str(c).lower():
+                    return c
+        return None
+
+    col_open = find_col(ohlc_names['open'])
+    col_high = find_col(ohlc_names['high'])
+    col_low  = find_col(ohlc_names['low'])
+    col_close= find_col(ohlc_names['close'])
+
+    # coerce numeric where found
+    for c in [col_open, col_high, col_low, col_close]:
+        if c is not None and c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+
+    # If we don't have OHLC, fallback: use Close only (candlestick won't show)
+    has_ohlc = all([col_open in df.columns if col_open is not None else False,
+                    col_high in df.columns if col_high is not None else False,
+                    col_low in df.columns if col_low is not None else False,
+                    col_close in df.columns if col_close is not None else False])
+
+    # Compute Bollinger Bands using sliders
+    if show_bollinger and 'Close' in df.columns:
+        df['BB_MA'] = df['Close'].rolling(window=bb_window).mean()
+        df['BB_STD'] = df['Close'].rolling(window=bb_window).std()
+        df['BB_UPPER'] = df['BB_MA'] + bb_std * df['BB_STD']
+        df['BB_LOWER'] = df['BB_MA'] - bb_std * df['BB_STD']
+
+    # Build plotly figure
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name='Close', mode='lines', line=dict(width=2)))
 
-    if 'SMA_20' in df.columns and not df['SMA_20'].dropna().empty:
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', mode='lines'))
-    if 'EMA_20' in df.columns and not df['EMA_20'].dropna().empty:
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA_20'], name='EMA 20', mode='lines'))
+    # If user asked for candlesticks and we have OHLC, draw candlestick safely
+    if show_candles and has_ohlc:
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df[col_open],
+            high=df[col_high],
+            low=df[col_low],
+            close=df[col_close],
+            name='OHLC',
+            increasing_line_color='green',
+            decreasing_line_color='red',
+            showlegend=True
+        ))
+    else:
+        # fallback: show Close line so chart isn't empty
+        if show_candles and not has_ohlc:
+            # Helpful tip message for user
+            st.warning("OHLC data not available for this interval/ticker. Showing Close line instead. For daily candlesticks use interval = '1d'.")
+        fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name='Close', mode='lines', line=dict(width=2)))
 
+    # Add SMA/EMA lines if present and requested
+    if 'SMA_20' in df.columns and 'SMA' in show_indicators:
+        if not df['SMA_20'].dropna().empty:
+            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', mode='lines'))
+    if 'EMA_20' in df.columns and 'EMA' in show_indicators:
+        if not df['EMA_20'].dropna().empty:
+            fig.add_trace(go.Scatter(x=df.index, y=df['EMA_20'], name='EMA 20', mode='lines'))
+
+    # Add Bollinger Bands
+    if show_bollinger and 'BB_UPPER' in df.columns:
+        if not df['BB_UPPER'].dropna().empty:
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_UPPER'], name='BB Upper', mode='lines', line=dict(dash='dash')))
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_MA'], name='BB Mid', mode='lines', opacity=0.6))
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_LOWER'], name='BB Lower', mode='lines', line=dict(dash='dash')))
+            # fill between upper and lower for visual band
+            fig.add_trace(go.Scatter(
+                x=list(df.index) + list(df.index[::-1]),
+                y=list(df['BB_UPPER']) + list(df['BB_LOWER'][::-1]),
+                fill='toself',
+                fillcolor='rgba(173,216,230,0.12)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                showlegend=False,
+                name='BB Band'
+            ))
+
+    # Prediction trace (if available)
     if pred_series is not None and not pred_series.dropna().empty:
         pred_vals = pd.to_numeric(pred_series.values, errors='coerce')
         if np.isfinite(pred_vals).any():
@@ -279,10 +377,16 @@ with col1:
             fig.add_trace(go.Scatter(x=pred_index, y=pred_vals, name=f'Prediction (+{prediction_days}d)',
                                      mode='lines', line=dict(dash='dash', width=2)))
 
-    fig.update_layout(height=520, template='plotly_dark',
-                      legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0.01),
-                      margin=dict(l=40, r=20, t=60, b=40))
+    # Layout tweaks
+    fig.update_layout(
+        height=560,
+        template='plotly_dark',
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0.01),
+        margin=dict(l=40, r=20, t=50, b=40)
+    )
 
+    # Finally render
     if len(fig.data) == 0:
         st.error("No traces to display in the chart.")
     else:
